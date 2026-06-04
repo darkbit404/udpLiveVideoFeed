@@ -1,86 +1,100 @@
-import cv2
-import socket
-import math
-import numpy as np
+#!/usr/bin/env python3
+"""
+Jetson Orin NX - Zero-Copy Hardware Encoded UDP Video Streaming (RTP)
+Camera: IMX477 (MIPI CSI)
+Encoder: NVIDIA NVENC H.264
+Transport: RTP over UDP (zero-copy)
+
+Uses gst-launch-1.0 subprocess execution to avoid encoder driver crashes.
+"""
+
+import os
+import sys
+import subprocess
+import time
+import signal
 
 # ================= CONFIG =================
 
-UDP_IP = "10.42.0.249"   # Receiver laptop IP
-UDP_PORT = 5000
+RECEIVER_IP = "10.42.0.249"   # Receiver laptop IP
+RECEIVER_PORT = 5000
 
-MAX_DGRAM = 60000
+# Camera settings
+CAMERA_WIDTH = 1280
+CAMERA_HEIGHT = 720
+CAMERA_FPS = 30
 
-# ================= SOCKET =================
-
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# Encoder settings  
+BITRATE = 5000000  # 5 Mbps (adjust based on network)
 
 # ================= GSTREAMER PIPELINE =================
 
-pipeline = (
-    "v4l2src device=/dev/video0 ! "
-    "video/x-raw,format=GRAY8,width=1280,height=720,framerate=15/1 ! "
-    "videoconvert ! "
-    "appsink"
+pipeline_str = (
+    f"v4l2src device=/dev/video0 ! "
+    f"video/x-raw,width={CAMERA_WIDTH},height={CAMERA_HEIGHT},framerate={CAMERA_FPS}/1 ! "
+    f"nvvidconv ! video/x-raw(memory:NVMM),format=I420,width={CAMERA_WIDTH},height={CAMERA_HEIGHT},framerate={CAMERA_FPS}/1 ! "
+    f"nvv4l2h264enc bitrate={BITRATE // 1000} ! "
+    f"queue ! h264parse ! rtph264pay config-interval=-1 ! "
+    f"udpsink host={RECEIVER_IP} port={RECEIVER_PORT} sync=false async=false"
 )
 
-# ================= CAMERA =================
+print("=" * 80)
+print("JETSON ORIN NX - ZERO-COPY HARDWARE ENCODED VIDEO STREAMING")
+print("=" * 80)
+print(f"\nCamera:    /dev/video0 (IMX477)")
+print(f"Resolution: {CAMERA_WIDTH}x{CAMERA_HEIGHT}@{CAMERA_FPS}fps")
+print(f"Encoder:   NVIDIA NVENC H.264")
+print(f"Bitrate:   {BITRATE / 1000000:.1f} Mbps")
+print(f"Receiver:  {RECEIVER_IP}:{RECEIVER_PORT}")
+print(f"\nGStreamer Pipeline:")
+print(f"{pipeline_str}\n")
+print("=" * 80)
+print("Starting stream (Press Ctrl+C to stop)...")
+print("=" * 80 + "\n")
 
-cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+# ================= SUBPROCESS EXECUTION =================
 
-if not cap.isOpened():
-    print("Camera failed to open")
-    exit()
+process = None
+try:
+    # Run gst_run.py helper script (uses environment variable to pass pipeline)
+    # This avoids shell parsing issues with complex GStreamer pipelines
+    env = dict(os.environ)
+    env['PIPELINE'] = pipeline_str
+    
+    cmd = [sys.executable, 'gst_run.py']
+    
+    process = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    
+    # Forward output
+    while process.poll() is None:
+        line = process.stdout.readline()
+        if line:
+            print(line.rstrip())
+    
+    # Print any remaining output
+    for line in process.stdout:
+        if line:
+            print(line.rstrip())
+    
+    exit_code = process.returncode
+    if exit_code == 0:
+        print("\n✓ Stream ended gracefully.")
+    else:
+        print(f"\n✗ Stream ended with exit code {exit_code}")
+    
+except KeyboardInterrupt:
+    print("\n\nShutting down...")
+    if process and process.poll() is None:
+        print("Terminating pipeline...")
+        process.terminate()
+        time.sleep(1)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    print("Stream stopped. Camera and encoder cleaned up.")
 
-print("Camera opened successfully")
-
-# ================= MAIN LOOP =================
-
-while True:
-
-    ret, frame = cap.read()
-
-    if not ret:
-        print("Frame read failed")
-        continue
-
-    # Resize to reduce bandwidth
-    frame = cv2.resize(frame, (640, 480))
-
-    # JPEG compression
-    result, encoded = cv2.imencode(
-        '.jpg',
-        frame,
-        [int(cv2.IMWRITE_JPEG_QUALITY), 70]
-    )
-
-    if not result:
-        print("JPEG encode failed")
-        continue
-
-    data = encoded.tobytes()
-
-    # Split into UDP-safe chunks
-    num_chunks = math.ceil(len(data) / MAX_DGRAM)
-
-    # Send chunk count
-    sock.sendto(str(num_chunks).encode(), (UDP_IP, UDP_PORT))
-
-    # Send chunks
-    for i in range(num_chunks):
-
-        start = i * MAX_DGRAM
-        end = start + MAX_DGRAM
-
-        sock.sendto(data[start:end], (UDP_IP, UDP_PORT))
-
-    # Local preview
-    cv2.imshow("Jetson Sender", frame)
-
-    if cv2.waitKey(1) == ord('q'):
-        break
-
-# ================= CLEANUP =================
-
-cap.release()
-sock.close()
-cv2.destroyAllWindows()
+except Exception as e:
+    print(f"ERROR: {e}")
+    if process and process.poll() is None:
+        process.kill()
+    sys.exit(1)
