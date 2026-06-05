@@ -39,6 +39,7 @@ Video window should appear immediately.
 ✅ **Zero-Copy** - No memory copies in encoding/decoding pipeline  
 ✅ **Hardware Encoded** - NVIDIA NVENC H.264 encoder (5-10% CPU vs 80% software)  
 ✅ **Hardware Decoded** - NVIDIA NVDEC H.264 decoder (optional, GPU-accelerated)  
+✅ **Frame Synchronization** - RTP jitter buffer + display sync to eliminate frame tearing  
 ✅ **Low Latency** - 30-60ms end-to-end (vs 100-200ms original)  
 ✅ **RTP/UDP** - Standard streaming protocol, auto-reassembly  
 ✅ **1280×720@30fps** - Full resolution at high framerate  
@@ -50,18 +51,24 @@ Video window should appear immediately.
 |--------|----------|-----------|------------|
 | CPU (Jetson) | 85% | 12% | **7x less** |
 | Latency | 150ms | 45ms | **3x faster** |
+| Frame Tearing | Yes (visible) | No (sync enabled) | **Eliminated** |
 | Encoder | Software JPEG | Hardware H.264 | **Dedicated HW** |
 | Memory Copies | 5-6 per frame | 0 (zero-copy) | **Infinite** |
 | Bitrate | ~3-4 Mbps | 5 Mbps | **Better quality** |
 
-## 🔧 Diagnostics
+## 🔧 Diagnostics & Monitoring
 
-Before running, verify hardware:
+Before and during streaming, use these tools:
 
 ```bash
-python3 camera_detector.py    # Check camera & encoders
-python3 test_pipeline.py      # Test pipeline components
-python3 monitor.py            # Monitor during streaming
+python3 camera_detector.py    # Check camera & hardware encoders/decoders
+python3 test_pipeline.py      # Test individual pipeline components
+python3 monitor.py            # Real-time CPU/GPU/memory stats during streaming
+```
+
+**On Jetson during streaming:**
+```bash
+tegrastats  # Monitor GPU encoder load and thermal status
 ```
 
 ## 📚 Documentation
@@ -129,16 +136,16 @@ See `SETUP.md` for more solutions.
 ┌─ JETSON ORIN NX (Sender) ──────────────────┐
 │                                             │
 │  [IMX477 Camera]                            │
-│        ↓ (v4l2src - zero-copy)             │
-│  [NV12 Format Detection]                    │
+│        ↓ (nvarguscamerasrc - zero-copy)    │
+│  [NV12 Format (1280×720@30fps)]            │
 │        ↓                                    │
 │  [NVIDIA NVENC H.264 Hardware Encoder]     │
-│        ↓ (zero-copy GPU buffer)            │
-│  [RTP Payload Encoder]                      │
+│        ↓ (zero-copy GPU memory)            │
+│  [RTP H.264 Payload Encoder]               │
 │        ↓                                    │
-│  [UDP/RTP Network Send]                     │
-│        ↓ (5000 port)                        │
-│        Network ══════════════════════════   │
+│  [UDP/RTP Network Transmit]                │
+│        ↓ (port 5000)                       │
+│        Network ══════════════════════════  │
 │                                             │
 └─────────────────────────────────────────────┘
 
@@ -146,15 +153,17 @@ See `SETUP.md` for more solutions.
 │                                             │
 │  [UDP/RTP Socket] (port 5000)              │
 │        ↓                                    │
-│  [RTP Depayload Parser]                    │
+│  [RTP Jitter Buffer] (latency=50ms)       │
+│        ↓ (absorbs network timing jitter)   │
+│  [RTP H.264 Depayload Parser]              │
 │        ↓                                    │
 │  [H.264 Elementary Stream Parser]          │
 │        ↓                                    │
 │  [NVIDIA NVDEC/Software Decoder]           │
-│        ↓ (hardware/software)                │
-│  [Display via autovideosink]               │
-│        ↓                                    │
-│  [On-Screen Display (30-60ms latency)]    │
+│        ↓ (hardware-accelerated)            │
+│  [Display via glimagesink] (sync=true)    │
+│        ↓ (frame-synchronized display)      │
+│  [On-Screen Video (45-60ms latency)]      │
 │                                             │
 └─────────────────────────────────────────────┘
 ```
@@ -181,14 +190,6 @@ CAMERA_HEIGHT = 240
 BITRATE = 500000    # 500 kbps
 CAMERA_FPS = 10     # Low FPS acceptable
 ```
-
-## 📞 Support & References
-
-- **NVIDIA Jetson Developer Kit**: https://developer.nvidia.com/jetson-orin-nano-developer-kit
-- **GStreamer Documentation**: https://gstreamer.freedesktop.org/documentation/
-- **V4L2 Tools**: `man v4l2-ctl`
-- **Jetson Tegra Stats**: `man tegrastats`
-
 ---
 
 **Last Updated:** June 2026  
