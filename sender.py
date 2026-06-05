@@ -27,7 +27,7 @@ TARGET_WIDTH = 1280      # Downscale to reduce bitrate
 TARGET_HEIGHT = 720
 
 # Encoder settings  
-BITRATE = 5000  # 5 Mbps (adjust based on network)
+BITRATE = 500 
 
 # ================= GSTREAMER PIPELINE =================
 
