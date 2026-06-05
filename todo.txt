@@ -1,0 +1,3 @@
+1) Force 5GHz.
+2) Remove in built wifi card of NX and pulg in T3U just to check.
+3) Get TP Link T3U Running on Jetson Orin NX. (Driver Issue).
