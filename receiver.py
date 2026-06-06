@@ -100,12 +100,12 @@ else:
 pipeline_str = (
     f"udpsrc address=0.0.0.0 port={LISTEN_PORT} caps=\"application/x-rtp, "
     f"media=(string)video, clock-rate=(int)90000, encoding-name=(string)H264\" ! "
-    f"rtpjitterbuffer latency=50 ! "
+    f"rtpjitterbuffer latency=0 ! "
     f"rtph264depay ! "
     f"h264parse ! "
     f"{decoder} ! "
     f"videoconvert ! "
-    f"glimagesink sync=true"
+    f"xvimagesink sync=true"
 )
 
 print(f"\nGStreamer Pipeline:")
@@ -122,12 +122,12 @@ except Exception as e:
     pipeline_str = (
             f"udpsrc address=0.0.0.0 port={LISTEN_PORT} caps=\"application/x-rtp, "
             f"media=(string)video, clock-rate=(int)90000, encoding-name=(string)H264\" ! "
-            f"rtpjitterbuffer latency=50 ! "
+            f"rtpjitterbuffer latency=0 ! "
             f"rtph264depay ! "
             f"h264parse ! "
             f"decodebin ! "
             f"videoconvert ! "
-            f"glimagesink sync=true"
+            f"xvimagesink sync=true"
     )
     try:
         pipeline = Gst.parse_launch(pipeline_str)
