@@ -23,7 +23,7 @@ RECEIVER_PORT = 5000
 CAMERA_WIDTH = 1920      # Use native resolution
 CAMERA_HEIGHT = 1080
 CAMERA_FPS = 30
-TARGET_WIDTH = 1280      # Downscale to reduce bitrate
+TARGET_WIDTH = 1080      # Downscale to reduce bitrate
 TARGET_HEIGHT = 720
 
 # Encoder settings  
@@ -33,11 +33,11 @@ BITRATE = 500
 
 pipeline_str = (
     f"nvarguscamerasrc ! "
-    f"video/x-raw(memory:NVMM),format=NV12,width=1280,height=720,framerate={CAMERA_FPS}/1 ! "
+    f"video/x-raw(memory:NVMM),format=NV12,width={CAMERA_WIDTH},height={CAMERA_HEIGHT},framerate={CAMERA_FPS}/1 ! "
     f"nvvidconv ! video/x-raw(memory:NVMM),format=I420,width={TARGET_WIDTH},height={TARGET_HEIGHT},framerate={CAMERA_FPS}/1 ! "
     f"nvv4l2h264enc bitrate={BITRATE // 1000} ! "
     f"queue ! h264parse ! rtph264pay config-interval=-1 ! "
-    f"udpsink host={RECEIVER_IP} port={RECEIVER_PORT} sync=false async=false"
+    f"udpsink host={RECEIVER_IP} port={RECEIVER_PORT} sync=true async=true"
 )
 
 print("=" * 80)
