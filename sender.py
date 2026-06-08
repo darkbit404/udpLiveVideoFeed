@@ -27,8 +27,7 @@ TARGET_WIDTH = 1080      # Downscale to reduce bitrate
 TARGET_HEIGHT = 720
 
 # Encoder settings  
-BITRATE = 500 
-
+BITRATE = 5000000
 # ================= GSTREAMER PIPELINE =================
 
 pipeline_str = (
@@ -36,7 +35,7 @@ pipeline_str = (
     f"video/x-raw(memory:NVMM),format=NV12,width={CAMERA_WIDTH},height={CAMERA_HEIGHT},framerate={CAMERA_FPS}/1 ! "
     f"nvvidconv ! video/x-raw(memory:NVMM),format=I420,width={TARGET_WIDTH},height={TARGET_HEIGHT},framerate={CAMERA_FPS}/1 ! "
     f"nvv4l2h264enc bitrate={BITRATE // 1000} ! "
-    f"queue ! h264parse ! rtph264pay config-interval=-1 ! "
+    f"queue ! h264parse ! rtph264pay config-interval=1 ! "
     f"udpsink host={RECEIVER_IP} port={RECEIVER_PORT} sync=true async=true"
 )
 
