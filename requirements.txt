@@ -1,0 +1,9 @@
+# Required for the OpenCV fallback sender/receiver scripts (sender_cv2.py, receiver_cv2.py)
+opencv-python>=4.5.0
+numpy>=1.19.0
+
+# Required for GStreamer Python bindings (receiver.py, test_pipeline.py, gst_run.py)
+# Note: On Ubuntu/Debian/JetPack, it is highly recommended to install PyGObject 
+# and GStreamer bindings using the system package manager:
+#   sudo apt install -y python3-gi gir1.2-gstreamer-1.0 gir1.2-glib-2.0
+PyGObject>=3.40.0
