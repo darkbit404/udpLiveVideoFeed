@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
 Jetson Orin NX / Linux Laptop - Zero-Copy Hardware Decoded UDP Video Streaming (RTP)
+Camera source: Arducam OV2311 (Monochrome Global Shutter)
 Decoder: NVIDIA NVDEC H.264 (Jetson) or Software fallback (Linux)
 Transport: RTP over UDP (zero-copy)
+
+NOTE: The OV2311 is a monochrome sensor, so the decoded stream will be
+grayscale. videoconvert passes it through correctly to the display sink.
 """
 
 import gi
@@ -142,7 +146,7 @@ if pipeline is None:
 # ================= PIPELINE STATE MANAGEMENT =================
 
 print(f"Listening for RTP video stream on port {LISTEN_PORT}")
-print("Codec: H.264")
+print("Codec: H.264 | Source: Arducam OV2311 (Monochrome — grayscale stream)")
 print("Press Ctrl+C to stop...\n")
 
 ret = pipeline.set_state(Gst.State.PLAYING)

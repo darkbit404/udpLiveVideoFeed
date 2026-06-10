@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
 Jetson Orin NX - Zero-Copy Hardware Encoded UDP Video Streaming (RTP)
-Camera: IMX477 (MIPI CSI)
+Camera: Arducam OV2311 (MIPI CSI, Monochrome Global Shutter)
 Encoder: NVIDIA NVENC H.264
 Transport: RTP over UDP (zero-copy)
+
+NOTE: OV2311 is a monochrome (grayscale) global shutter sensor.
+It bypasses the Argus ISP — v4l2src with GRAY8 format is used instead
+of nvarguscamerasrc. A videoconvert step converts GRAY8 → NV12 before
+passing to the hardware encoder.
 
 Uses gst-launch-1.0 subprocess execution to avoid encoder driver crashes.
 """
@@ -20,20 +25,30 @@ RECEIVER_IP = "10.42.0.249"   # Receiver laptop IP
 RECEIVER_PORT = 5000
 
 # Camera settings
-CAMERA_WIDTH = 1920      # Use native resolution
-CAMERA_HEIGHT = 1080
-CAMERA_FPS = 30
-TARGET_WIDTH = 1080      # Downscale to reduce bitrate
+# OV2311 native resolution: 1600x1300 @ up to 60fps
+# Also supports: 1600x1080 @ 80fps, 1280x720 @ 120fps
+CAMERA_DEVICE = "/dev/video0"
+CAMERA_WIDTH = 1600
+CAMERA_HEIGHT = 1300
+CAMERA_FPS = 60
+TARGET_WIDTH = 1280      # Downscale for encoding (maintains ~16:9 crop)
 TARGET_HEIGHT = 720
 
-# Encoder settings  
-BITRATE = 5000000
+# Encoder settings
+BITRATE = 4000000        # 4 Mbps (sufficient for grayscale content)
+
 # ================= GSTREAMER PIPELINE =================
 
+# OV2311 pipeline notes:
+# - v4l2src replaces nvarguscamerasrc (OV2311 does not go through the Argus ISP)
+# - format=GRAY8 is the native OV2311 output (monochrome, 8-bit)
+# - videoconvert converts GRAY8 → NV12 for nvv4l2h264enc
+# - nvvidconv handles the optional downscale on-GPU after the colorspace convert
 pipeline_str = (
-    f"nvarguscamerasrc ! "
-    f"video/x-raw(memory:NVMM),format=NV12,width={CAMERA_WIDTH},height={CAMERA_HEIGHT},framerate={CAMERA_FPS}/1 ! "
-    f"nvvidconv ! video/x-raw(memory:NVMM),format=I420,width={TARGET_WIDTH},height={TARGET_HEIGHT},framerate={CAMERA_FPS}/1 ! "
+    f"v4l2src device={CAMERA_DEVICE} ! "
+    f"video/x-raw,format=GRAY8,width={CAMERA_WIDTH},height={CAMERA_HEIGHT},framerate={CAMERA_FPS}/1 ! "
+    f"videoconvert ! video/x-raw,format=NV12 ! "
+    f"nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width={TARGET_WIDTH},height={TARGET_HEIGHT},framerate={CAMERA_FPS}/1 ! "
     f"nvv4l2h264enc bitrate={BITRATE // 1000} ! "
     f"queue ! h264parse ! rtph264pay config-interval=1 ! "
     f"udpsink host={RECEIVER_IP} port={RECEIVER_PORT} sync=true async=true"
@@ -42,11 +57,12 @@ pipeline_str = (
 print("=" * 80)
 print("JETSON ORIN NX - ZERO-COPY HARDWARE ENCODED VIDEO STREAMING")
 print("=" * 80)
-print(f"\nCamera:    /dev/video0 (IMX477)")
-print(f"Resolution: {CAMERA_WIDTH}x{CAMERA_HEIGHT} (native) → {TARGET_WIDTH}x{TARGET_HEIGHT} (encoded)")
-print(f"Encoder:   NVIDIA NVENC H.264")
-print(f"Bitrate:   {BITRATE / 1000000:.1f} Mbps")
-print(f"Receiver:  {RECEIVER_IP}:{RECEIVER_PORT}")
+print(f"\nCamera:     {CAMERA_DEVICE} (Arducam OV2311 — Monochrome Global Shutter)")
+print(f"Resolution: {CAMERA_WIDTH}x{CAMERA_HEIGHT} @ {CAMERA_FPS}fps (native) → {TARGET_WIDTH}x{TARGET_HEIGHT} (encoded)")
+print(f"Encoder:    NVIDIA NVENC H.264")
+print(f"Bitrate:    {BITRATE / 1000000:.1f} Mbps")
+print(f"Receiver:   {RECEIVER_IP}:{RECEIVER_PORT}")
+print(f"\nNOTE: OV2311 is a monochrome sensor — stream will be grayscale.")
 print(f"\nGStreamer Pipeline:")
 print(f"{pipeline_str}\n")
 print("=" * 80)
