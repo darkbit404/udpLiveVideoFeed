@@ -21,7 +21,7 @@ import signal
 
 # ================= CONFIG =================
 
-RECEIVER_IP = "10.42.0.249"   # Receiver laptop IP
+RECEIVER_IP = "10.42.0.218"   # Receiver laptop IP
 RECEIVER_PORT = 5000
 
 # Camera settings
@@ -31,11 +31,11 @@ CAMERA_DEVICE = "/dev/video0"
 CAMERA_WIDTH = 1600
 CAMERA_HEIGHT = 1300
 CAMERA_FPS = 60
-TARGET_WIDTH = 1280      # Downscale for encoding (maintains ~16:9 crop)
-TARGET_HEIGHT = 720
+TARGET_WIDTH = 1600      # Downscale for encoding (maintains ~16:9 crop)
+TARGET_HEIGHT = 1300
 
 # Encoder settings
-BITRATE = 4000000        # 4 Mbps (sufficient for grayscale content)
+BITRATE = 500        # 4 Mbps (sufficient for grayscale content)
 
 # ================= GSTREAMER PIPELINE =================
 
