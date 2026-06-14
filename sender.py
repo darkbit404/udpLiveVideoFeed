@@ -35,7 +35,7 @@ TARGET_WIDTH = 1600      # Downscale for encoding (maintains ~16:9 crop)
 TARGET_HEIGHT = 1300
 
 # Encoder settings
-BITRATE = 500        # 4 Mbps (sufficient for grayscale content)
+BITRATE = 4000000        # 4 Mbps (sufficient for grayscale content)
 
 # ================= GSTREAMER PIPELINE =================
 
@@ -49,9 +49,9 @@ pipeline_str = (
     f"video/x-raw,format=GRAY8,width={CAMERA_WIDTH},height={CAMERA_HEIGHT},framerate={CAMERA_FPS}/1 ! "
     f"videoconvert ! video/x-raw,format=NV12 ! "
     f"nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width={TARGET_WIDTH},height={TARGET_HEIGHT},framerate={CAMERA_FPS}/1 ! "
-    f"nvv4l2h264enc bitrate={BITRATE // 1000} ! "
+    f"nvv4l2h264enc bitrate={BITRATE} ! "
     f"queue ! h264parse ! rtph264pay config-interval=1 ! "
-    f"udpsink host={RECEIVER_IP} port={RECEIVER_PORT} sync=true async=true"
+    f"udpsink host={RECEIVER_IP} port={RECEIVER_PORT} buffer-size=2097152 sync=true async=false"
 )
 
 print("=" * 80)

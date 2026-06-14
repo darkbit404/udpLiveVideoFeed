@@ -102,14 +102,14 @@ else:
 # - xvimagesink/glimagesink: Display (GPU-accelerated)
 
 pipeline_str = (
-    f"udpsrc address=0.0.0.0 port={LISTEN_PORT} caps=\"application/x-rtp, "
+    f"udpsrc address=0.0.0.0 port={LISTEN_PORT} buffer-size=4194304 caps=\"application/x-rtp, "
     f"media=(string)video, clock-rate=(int)90000, encoding-name=(string)H264\" ! "
-    f"rtpjitterbuffer latency=200 ! "
+    f"rtpjitterbuffer latency=80 drop-on-latency=true ! "
     f"rtph264depay ! "
     f"h264parse ! "
     f"{decoder} ! "
     f"videoconvert ! "
-    f"xvimagesink sync=true"
+    f"xvimagesink sync=false"
 )
 
 print(f"\nGStreamer Pipeline:")
@@ -124,14 +124,14 @@ except Exception as e:
     # Try a more generic fallback that uses `decodebin` which will pick an available decoder
     print("Trying fallback pipeline with decodebin...")
     pipeline_str = (
-            f"udpsrc address=0.0.0.0 port={LISTEN_PORT} caps=\"application/x-rtp, "
-            f"media=(string)video, clock-rate=(int)90000, encoding-name=(string)H264\" ! "
-            f"rtpjitterbuffer latency=0 ! "
-            f"rtph264depay ! "
-            f"h264parse ! "
-            f"decodebin ! "
-            f"videoconvert ! "
-            f"xvimagesink sync=true"
+        f"udpsrc address=0.0.0.0 port={LISTEN_PORT} buffer-size=4194304 caps=\"application/x-rtp, "
+        f"media=(string)video, clock-rate=(int)90000, encoding-name=(string)H264\" ! "
+        f"rtpjitterbuffer latency=80 drop-on-latency=true ! "
+        f"rtph264depay ! "
+        f"h264parse ! "
+        f"decodebin ! "
+        f"videoconvert ! "
+        f"xvimagesink sync=false" 
     )
     try:
         pipeline = Gst.parse_launch(pipeline_str)
