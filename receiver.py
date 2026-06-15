@@ -7,6 +7,19 @@ Transport: RTP over UDP (zero-copy)
 
 NOTE: The OV2311 is a monochrome sensor, so the decoded stream will be
 grayscale. videoconvert passes it through correctly to the display sink.
+
+FIX 4: rtpjitterbuffer tuning for range resilience.
+  - latency raised from 80ms → 150ms: gives the buffer more room to absorb
+    the irregular packet delivery that occurs when Wi-Fi signal degrades at
+    range. At close range this is invisible; at range it prevents cascading
+    frame corruption.
+  - drop-on-latency changed from true → false: previously, any momentary
+    Wi-Fi hiccup would cause the buffer to drop frames rather than absorb
+    the spike. With false, packets are held and delivered late rather than
+    discarded, which is far less visually disruptive.
+  - do-lost=true added: sends a GstRTPPacketLost event downstream when a
+    packet is truly unrecoverable, allowing the decoder to conceal the loss
+    gracefully rather than outputting corrupted macroblocks.
 """
 
 import gi
@@ -54,7 +67,7 @@ def check_nvv4l2_decoder():
     try:
         pipeline_test = Gst.parse_launch("nvv4l2h264dec ! fakesink")
         return pipeline_test is not None
-    except:
+    except Exception:
         return False
 
 def check_nvdec_decoder():
@@ -62,7 +75,7 @@ def check_nvdec_decoder():
     try:
         pipeline_test = Gst.parse_launch("nvdec ! fakesink")
         return pipeline_test is not None
-    except:
+    except Exception:
         return False
 
 # Choose decoder based on platform
@@ -83,8 +96,7 @@ else:
         pipeline_test = Gst.parse_launch("nvdec ! fakesink")
         decoder = "nvdec"
         print("Using nvdec (NVIDIA GPU decoder)")
-    except:
-        # Prefer `avdec_h264` if installed, otherwise use `decodebin` as a generic fallback
+    except Exception:
         if Gst.ElementFactory.find("avdec_h264") is not None:
             decoder = "avdec_h264"
             print("Using software decoder (avdec_h264)")
@@ -94,17 +106,29 @@ else:
 
 # ================= GSTREAMER PIPELINE - HARDWARE DECODED RTP =================
 
-# Optimized pipeline for zero-copy playback:
-# - udpsrc: Receive RTP packets
-# - rtph264depay: RTP payload (minimal copy)
-# - h264parse: Parse H.264 elementary stream
-# - nvv4l2h264dec/nvdec: NVIDIA hardware H.264 decoder (zero-copy on Jetson)
-# - xvimagesink/glimagesink: Display (GPU-accelerated)
+# FIX 4: rtpjitterbuffer changes explained:
+#
+#   latency=150
+#     Wi-Fi at range delivers packets with highly variable inter-arrival times
+#     (jitter spikes to 100ms+ are common as the radio retries at lower MCS).
+#     80ms was too tight — packets arriving 85ms late were treated as lost.
+#     150ms gives a comfortable margin without adding perceptible display lag.
+#
+#   drop-on-latency=false
+#     The old behaviour dropped any packet that arrived after the jitter
+#     deadline, turning every brief signal fade into a burst of corrupted or
+#     missing frames. With false, late packets are still rendered (slightly
+#     delayed) which is far less disruptive visually.
+#
+#   do-lost=true
+#     When a packet is genuinely unrecoverable (gap in sequence numbers),
+#     this sends a downstream loss event so h264parse/the decoder can request
+#     error concealment rather than outputting corrupted macroblocks.
 
 pipeline_str = (
-    f"udpsrc address=0.0.0.0 port={LISTEN_PORT} buffer-size=4194304 caps=\"application/x-rtp, "
-    f"media=(string)video, clock-rate=(int)90000, encoding-name=(string)H264\" ! "
-    f"rtpjitterbuffer latency=80 drop-on-latency=true ! "
+    f"udpsrc address=0.0.0.0 port={LISTEN_PORT} buffer-size=4194304 "
+    f"caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)H264\" ! "
+    f"rtpjitterbuffer latency=150 drop-on-latency=false do-lost=true ! "
     f"rtph264depay ! "
     f"h264parse ! "
     f"{decoder} ! "
@@ -112,6 +136,9 @@ pipeline_str = (
     f"xvimagesink sync=false"
 )
 
+print(f"\nFIX SUMMARY:")
+print(f"  [4] rtpjitterbuffer: latency=150, drop-on-latency=false, do-lost=true")
+print(f"      → absorbs Wi-Fi jitter spikes at range without dropping frames")
 print(f"\nGStreamer Pipeline:")
 print(f"{pipeline_str}\n")
 
@@ -121,17 +148,16 @@ try:
     pipeline = Gst.parse_launch(pipeline_str)
 except Exception as e:
     print(f"Failed to create pipeline: {e}")
-    # Try a more generic fallback that uses `decodebin` which will pick an available decoder
     print("Trying fallback pipeline with decodebin...")
     pipeline_str = (
-        f"udpsrc address=0.0.0.0 port={LISTEN_PORT} buffer-size=4194304 caps=\"application/x-rtp, "
-        f"media=(string)video, clock-rate=(int)90000, encoding-name=(string)H264\" ! "
-        f"rtpjitterbuffer latency=80 drop-on-latency=true ! "
+        f"udpsrc address=0.0.0.0 port={LISTEN_PORT} buffer-size=4194304 "
+        f"caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)H264\" ! "
+        f"rtpjitterbuffer latency=150 drop-on-latency=false do-lost=true ! "
         f"rtph264depay ! "
         f"h264parse ! "
         f"decodebin ! "
         f"videoconvert ! "
-        f"xvimagesink sync=false" 
+        f"xvimagesink sync=false"
     )
     try:
         pipeline = Gst.parse_launch(pipeline_str)
@@ -177,17 +203,16 @@ def on_eos(bus, msg):
 # ================= MAIN LOOP =================
 
 bus = pipeline.get_bus()
+bus.add_signal_watch()
 bus.connect("message::error", on_error)
 bus.connect("message::warning", on_warning)
 bus.connect("message::eos", on_eos)
 
 try:
     loop = GLib.MainLoop()
-    GLib.timeout_add_seconds(1, lambda: True)
     loop.run()
 except KeyboardInterrupt:
     print("\n\nShutting down...")
-    pass
 
 # ================= CLEANUP =================
 
