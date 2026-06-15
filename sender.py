@@ -5,14 +5,51 @@ Camera: Arducam OV2311 (MIPI CSI, Monochrome Global Shutter)
 Encoder: NVIDIA NVENC H.264
 Transport: RTP over UDP (zero-copy)
 
-gst_run.py subprocess helper has been eliminated. The pipeline now runs
-directly inside this process using GLib.MainLoop, matching the architecture
-of receiver.py. This removes:
-  - A second Python interpreter loaded in memory
-  - A cross-process stdout pipe + relay thread
-  - Signal propagation delay on shutdown (was: SIGINT → sender → terminate()
-    → sleep(1) → kill(); now: SIGINT → KeyboardInterrupt → pipeline.set_state(NULL))
-  - Risk of /dev/video0 remaining locked after a subprocess kill
+CPU / GPU LOAD BREAKDOWN
+------------------------
+Each pipeline stage runs on a distinct processing unit:
+
+  v4l2src       [CPU — kernel driver]
+    Captures raw GRAY8 frames from the OV2311 via V4L2 mmap. The kernel
+    DMA-copies sensor data into a system-memory buffer; no GPU involvement.
+
+  videoconvert  [CPU — single-threaded, the pipeline bottleneck]
+    Converts GRAY8 → I420 entirely in software. nvvidconv cannot accept
+    GRAY8 from system memory directly, making this step unavoidable with
+    the OV2311. At 1600×1300@60fps this saturates a single core (~90-92%).
+    At 1280×720@60fps the load drops to ~40-45%, which is why 720p is used.
+
+  nvvidconv     [GPU — VIC / video image compositor]
+    Converts I420 (system memory) → NV12 (NVMM, GPU-mapped memory).
+    This is where the data crosses from the CPU domain into the GPU domain.
+    From this point onward all buffers are zero-copy NVMM references.
+
+  nvv4l2h264enc [GPU — NVENC hardware H.264 encoder]
+    Encodes NV12/NVMM frames using the dedicated NVENC block on the Orin NX.
+    Runs entirely on the encoder ASIC; negligible CPU and GPU shader load.
+    Output is an H.264 elementary stream in system memory.
+
+  h264parse / rtph264pay / udpsink  [CPU — lightweight]
+    Parsing, RTP packetisation, and UDP socket writes are CPU tasks but
+    involve only metadata and small packet headers. Payload bytes are passed
+    by reference where possible. Combined CPU cost is well under 5%.
+
+    Parses the H.264 bitstream to find NAL unit boundaries, SPS/PPS headers, 
+    and stream metadata. This is pure byte-level parsing logic with no parallelisable math — 
+    there's nothing for a GPU to accelerate. The NVENC output already lands in system memory, 
+    so there's no NVMM buffer to hand off anyway.
+
+    Constructs RTP packets: adds sequence numbers, timestamps, SSRC, and fragments NAL units 
+    to fit the MTU. This is sequential, stateful network protocol logic — 
+    the kind of work GPUs are fundamentally bad at (branchy, low-parallelism, one-packet-at-a-time).
+
+    Writes to a kernel UDP socket via a syscall. The network stack lives in the kernel, on the CPU. 
+    Even with RDMA or GPU-direct technologies (which require specialised NICs and are nowhere near a Jetson Wi-Fi setup), 
+    the data has to transit through the kernel networking stack.
+
+SUMMARY:
+  The one unavoidable CPU cost is the GRAY8 → I420 conversion. All other
+  heavy lifting (scaling, encoding) is done on dedicated GPU hardware.
 """
 
 import gi
@@ -57,17 +94,23 @@ Gst.init(sys.argv)
 
 # ================= PIPELINE =================
 
-# Pipeline flow:
-#   v4l2src      (GRAY8, mmap — OV2311 only exposes GREY formats)
+# Pipeline flow (CPU = system CPU core, GPU = on-die NVIDIA hardware block):
+#
+#   v4l2src      [CPU] GRAY8 frames via V4L2 mmap; kernel DMA into system RAM
 #     → queue          [thread boundary: isolates capture from conversion]
-#     → videoconvert   [GRAY8→I420, CPU — runs on its own OS thread]
-#     → queue          [thread boundary: isolates conversion from GPU path]
-#     → nvvidconv      [I420→NV12/NVMM, GPU — zero-copy into encoder]
-#     → nvv4l2h264enc  [NVENC hardware H.264 encoder]
+#     → videoconvert   [CPU] GRAY8→I420 — software conversion, single-threaded;
+#                      this is the only unavoidable CPU-heavy stage (see module
+#                      docstring). Runs on its own OS thread courtesy of queue.
+#     → queue          [thread boundary: isolates CPU conversion from GPU path]
+#     → nvvidconv      [GPU / VIC] I420 (system RAM) → NV12 (NVMM); data crosses
+#                      from CPU domain into GPU-mapped memory here — zero-copy
+#                      from this point forward
+#     → nvv4l2h264enc  [GPU / NVENC] hardware H.264 encode from NVMM; negligible
+#                      CPU and shader cost — runs on the dedicated encoder ASIC
 #     → queue          [absorbs encoder output bursts]
-#     → h264parse      [packetises H.264 elementary stream]
-#     → rtph264pay     [RTP payloader, mtu=1400 avoids IP fragmentation]
-#     → udpsink        [sync=false: no clock-pacing needed on live source]
+#     → h264parse      [CPU] lightweight — metadata/header parsing only
+#     → rtph264pay     [CPU] RTP packetisation; mtu=1400 avoids IP fragmentation
+#     → udpsink        [CPU] UDP socket writes; sync=false, no clock-pacing needed
 
 pipeline_str = (
     f"v4l2src device={CAMERA_DEVICE} ! "
