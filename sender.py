@@ -18,14 +18,16 @@ FIX 2: udpsink sync=false — removes clock-based packet pacing which caused
 FIX 3: stdout relay moved to a daemon thread — no longer a tight blocking
         loop on the main thread competing with subprocess scheduling.
 
-Uses gst_run.py subprocess execution to avoid encoder driver crashes.
+FIX 4 (merged): gst_run.py inlined — pipeline runs directly in-process via
+        GStreamer bindings instead of a subprocess.
 """
 
-import os
 import sys
-import subprocess
 import time
-import threading
+import gi
+
+gi.require_version('Gst', '1.0')
+from gi.repository import Gst, GLib
 
 # ================= CONFIG =================
 
@@ -33,8 +35,6 @@ RECEIVER_IP = "10.42.0.50"   # Receiver laptop IP
 RECEIVER_PORT = 5000
 
 # Camera settings
-# OV2311 native resolution: 1600x1300 @ up to 60fps
-# Also supports: 1600x1080 @ 80fps, 1280x720 @ 120fps
 CAMERA_DEVICE = "/dev/video0"
 CAMERA_WIDTH = 1600
 CAMERA_HEIGHT = 1300
@@ -43,23 +43,14 @@ TARGET_WIDTH = 1600
 TARGET_HEIGHT = 1300
 
 # Encoder settings
-# FIX 2 (related): Reduced from 4 Mbps to 2 Mbps.
-# Grayscale content compresses extremely well. Lower bitrate = smaller UDP
-# bursts = more headroom on the Wi-Fi link at range. Raise if quality suffers.
 BITRATE = 2000000        # 2 Mbps
+
+# ================= GSTREAMER INITIALIZATION =================
+
+Gst.init(None)
 
 # ================= GSTREAMER PIPELINE =================
 
-# FIX 1: Pipeline now uses nvvidconv for GRAY8 → NV12 conversion entirely on
-# the GPU. The old `videoconvert ! video/x-raw,format=NV12` stage ran on the
-# CPU and moved ~750 MB/s of frame data through system RAM at 1600x1300@60fps.
-#
-# nvvidconv on Jetson supports GRAY8 input directly and outputs NV12 into
-# NVMM (GPU-side) memory in a single step, keeping frames off the CPU path.
-#
-# FIX 2: udpsink sync=false — on a live camera source there is no meaningful
-# presentation timestamp to pace against. sync=true caused the GStreamer clock
-# subsystem to wake the CPU hundreds of times per second to meter packets.
 pipeline_str = (
     f"v4l2src device={CAMERA_DEVICE} io-mode=2 ! "
     f"video/x-raw,format=GRAY8,width={CAMERA_WIDTH},height={CAMERA_HEIGHT},framerate={CAMERA_FPS}/1 ! "
@@ -81,76 +72,61 @@ print(f"Encoder:    NVIDIA NVENC H.264")
 print(f"Bitrate:    {BITRATE / 1000000:.1f} Mbps")
 print(f"Receiver:   {RECEIVER_IP}:{RECEIVER_PORT}")
 print(f"\nNOTE: OV2311 is a monochrome sensor — stream will be grayscale.")
-print(f"\nFIX SUMMARY:")
-print(f"  [1] CPU videoconvert removed — nvvidconv handles GRAY8→NV12 on GPU")
-print(f"  [2] udpsink sync=false — no CPU clock-pacing on live source")
-print(f"  [3] stdout relay runs in daemon thread — main thread unblocked")
 print(f"\nGStreamer Pipeline:")
 print(f"{pipeline_str}\n")
 print("=" * 80)
 print("Starting stream (Press Ctrl+C to stop)...")
 print("=" * 80 + "\n")
 
-# ================= SUBPROCESS EXECUTION =================
+# ================= PIPELINE CREATION =================
 
-# FIX 3: stdout relay moved to a dedicated daemon thread.
-# The original tight `while process.poll() is None: readline()` loop ran on
-# the main thread, holding the GIL between reads and interfering with
-# subprocess scheduling. A daemon thread lets the OS handle blocking I/O
-# independently and exits automatically when the main process ends.
-
-def relay_output(proc):
-    """Forward subprocess stdout to our stdout from a background thread."""
-    try:
-        for line in proc.stdout:
-            if line:
-                print(line.rstrip(), flush=True)
-    except Exception:
-        pass
-
-process = None
 try:
-    env = dict(os.environ)
-    env['PIPELINE'] = pipeline_str
+    pipeline = Gst.parse_launch(pipeline_str)
+    if pipeline is None:
+        print("Failed to parse GStreamer pipeline", file=sys.stderr)
+        sys.exit(1)
 
-    cmd = [sys.executable, 'gst_run.py']
+    ret = pipeline.set_state(Gst.State.PLAYING)
+    if ret == Gst.StateChangeReturn.FAILURE:
+        print("Failed to set pipeline to PLAYING state", file=sys.stderr)
+        sys.exit(1)
 
-    process = subprocess.Popen(
-        cmd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1
-    )
+    print("Pipeline PLAYING. Running indefinitely...", file=sys.stderr)
 
-    # FIX 3: Launch relay thread instead of blocking the main thread
-    relay_thread = threading.Thread(target=relay_output, args=(process,), daemon=True)
-    relay_thread.start()
+    # ================= BUS MONITORING =================
 
-    # Main thread simply waits for the subprocess to finish
-    process.wait()
-    relay_thread.join(timeout=2)
+    bus = pipeline.get_bus()
 
-    exit_code = process.returncode
-    if exit_code == 0:
-        print("\n✓ Stream ended gracefully.")
-    else:
-        print(f"\n✗ Stream ended with exit code {exit_code}")
+    while True:
+        msg = bus.timed_pop_filtered(100000000, Gst.MessageType.ANY)
+
+        if msg:
+            if msg.type == Gst.MessageType.ERROR:
+                err, debug = msg.parse_error()
+                print(f"ERROR: {err.message}", file=sys.stderr)
+                if debug:
+                    print(f"DEBUG: {debug}", file=sys.stderr)
+                pipeline.set_state(Gst.State.NULL)
+                sys.exit(1)
+            elif msg.type == Gst.MessageType.EOS:
+                print("End of stream", file=sys.stderr)
+                pipeline.set_state(Gst.State.NULL)
+                sys.exit(0)
+            elif msg.type == Gst.MessageType.WARNING:
+                warn, debug = msg.parse_warning()
+                print(f"WARNING: {warn.message}", file=sys.stderr)
+
+        time.sleep(0.01)
 
 except KeyboardInterrupt:
     print("\n\nShutting down...")
-    if process and process.poll() is None:
-        print("Terminating pipeline...")
-        process.terminate()
-        time.sleep(1)
-        if process.poll() is None:
-            process.kill()
-            process.wait()
+    pipeline.set_state(Gst.State.NULL)
     print("Stream stopped. Camera and encoder cleaned up.")
 
 except Exception as e:
     print(f"ERROR: {e}")
-    if process and process.poll() is None:
-        process.kill()
+    try:
+        pipeline.set_state(Gst.State.NULL)
+    except Exception:
+        pass
     sys.exit(1)
